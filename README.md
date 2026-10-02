@@ -40,8 +40,8 @@ with **Spike Guard** in the menu; the choice is remembered. While it is off the 
 alert and pauses nothing.
 
 A spike is the session utilization rising by X percentage points or more within
-N minutes. Both are set in the menu under **Threshold** (5, 10, 15, 20 or 30 points)
-and **Window** (2, 5, 10, 15 or 30 minutes); the default is 10 points in 5 minutes and
+N minutes. Both are set in the menu under **Threshold** (5, 10, 15, 20 or 30% of the limit)
+and **Window** (2, 5, 10, 15 or 30 minutes); the default is +10% of the limit in 5 minutes and
 the choice is remembered. When a spike happens the widget:
 
 1. Works out which local Claude Code sessions made API calls during the rise, and matches
