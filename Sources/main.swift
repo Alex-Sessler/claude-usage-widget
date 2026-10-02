@@ -44,6 +44,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         refresh()
+        if UserDefaults.standard.object(forKey: "spikeGuardEnabled") == nil { askAboutSpikeGuard() }
+    }
+
+    /// First launch only: the spike guard inspects and pauses processes, so turning it
+    /// on is the user's call. Either answer is saved, so this isn't asked again.
+    private func askAboutSpikeGuard() {
+        let alert = NSAlert()
+        alert.messageText = "Turn on the spike guard?"
+        alert.informativeText = "The spike guard watches for sudden jumps in your session usage "
+            + "(+\(Int(Config.spikeThreshold)) points in \(Int(Config.spikeWindow / 60)) min by default). "
+            + "When one happens, it shows which local Claude Code sessions caused it and pauses them "
+            + "unless you decline. Pausing is reversible.\n\n"
+            + "Without it, the widget only shows your usage. You can change this any time in the menu."
+        alert.addButton(withTitle: "Turn On")
+        alert.addButton(withTitle: "Keep Off")
+        NSApp.activate(ignoringOtherApps: true)
+        setSpikeGuard(alert.runModal() == .alertFirstButtonReturn)
+    }
+
+    private func setSpikeGuard(_ enabled: Bool) {
+        spikeGuardEnabled = enabled
+        // Skip what was written while the guard was off, so it isn't attributed to the next poll.
+        if enabled { _ = scanner.scan() }
+        render()
     }
 
     // MARK: Polling
@@ -486,10 +510,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func toggleSpikeGuard() {
-        spikeGuardEnabled.toggle()
-        // Skip what was written while the guard was off, so it isn't attributed to the next poll.
-        if spikeGuardEnabled { _ = scanner.scan() }
-        render()
+        setSpikeGuard(!spikeGuardEnabled)
     }
 
     @objc private func setSpikeThreshold(_ sender: NSMenuItem) {
