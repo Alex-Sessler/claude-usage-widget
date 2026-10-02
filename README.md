@@ -1,7 +1,7 @@
 # Claude Usage Widget
 
 A macOS menu bar app that shows how much of your Claude subscription limits you have
-used, and pauses runaway Claude Code sessions when usage suddenly jumps.
+used. Optionally, it pauses runaway Claude Code sessions when usage suddenly jumps.
 
 ```
 ✳︎ S 42%  W 17%
@@ -33,7 +33,11 @@ numbers as on [claude.ai/settings/usage](https://claude.ai/settings/usage).
   and share of local tokens. Subagent usage counts towards the session that spawned it.
 - **Refresh Now** (`⌘R`), **Open Usage Page…**, **Launch at Login**, **Quit** (`⌘Q`).
 
-### Spike guard
+### Spike guard (optional)
+
+Off by default. Turn it on with **Spike Guard** in the menu; the choice is remembered.
+While it is off the widget only shows usage: it never looks at your processes, shows no
+alert and pauses nothing.
 
 A spike is the session utilization rising by X percentage points or more within
 N minutes. Both are set in the menu under **Threshold** (5, 10, 15, 20 or 30 points)
@@ -69,9 +73,8 @@ Things worth knowing:
 - While the usage API rate-limits the widget, it backs off (2 to 10 minutes) and the
   spike guard can't see usage until it recovers.
 
-Toggle the guard with **Spike Guard** in the menu (on by default; the choice is
-remembered). **Test Spike Alert** shows the alert for your current sessions without
-pausing anything.
+While the guard is on, **Test Spike Alert** shows the alert for your current sessions
+without pausing anything.
 
 ### No tracking
 
@@ -130,7 +133,8 @@ The alert timeout (15 seconds) is a constant in
   poll via `/usr/bin/security`, used for that one request and never stored or logged.
 - **Local activity** comes from tailing Claude Code's transcripts in
   `~/.claude/projects/**/*.jsonl` and summing the token usage of each API response.
-- **Processes** are found with `ps` and their working directories with `lsof`.
+- **Processes** are found with `ps` and their working directories with `lsof`, only
+  while the spike guard is on.
 
 Spike detection uses only the account-wide utilization from the API, because that is
 what the limit is counted on. Local token counts are used only to find out who was

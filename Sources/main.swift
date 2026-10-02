@@ -23,7 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var topContexts: [String: (context: SessionContext, loadedAt: Date)] = [:]
 
     private var spikeGuardEnabled: Bool {
-        get { UserDefaults.standard.object(forKey: "spikeGuardEnabled") as? Bool ?? true }
+        get { UserDefaults.standard.object(forKey: "spikeGuardEnabled") as? Bool ?? false }
         set { UserDefaults.standard.set(newValue, forKey: "spikeGuardEnabled") }
     }
 
@@ -52,12 +52,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !isRefreshing else { return }
         isRefreshing = true
 
-        // Local activity is sampled every poll, even if the API call fails.
+        // Local activity is sampled every poll, even if the API call fails — but only
+        // while the spike guard is on, or something it paused is still waiting.
         let now = Date()
-        let table = Processes.table()
-        let claudes = Processes.claudeProcesses(in: table)
-        let sessions = scanner.scan()
-        spikeGuard.recordActivity(sessions, processes: claudes, at: now)
+        let guardOn = spikeGuardEnabled
+        let table = guardOn || !paused.isEmpty ? Processes.table() : []
+        let claudes = guardOn ? Processes.claudeProcesses(in: table) : []
+        if guardOn { spikeGuard.recordActivity(scanner.scan(), processes: claudes, at: now) }
         updatePaused(table)
 
         if let next = nextAPIAttempt, now < next {
@@ -77,10 +78,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 backoff = 0
                 lastUpdated = Date()
 
-                if let session = usage.fiveHour,
+                if guardOn, spikeGuardEnabled, let session = usage.fiveHour,
                    let spike = spikeGuard.recordUtilization(session.utilization,
-                                                            window: Self.windowKey(session.resetsAt), at: now),
-                   spikeGuardEnabled {
+                                                            window: Self.windowKey(session.resetsAt), at: now) {
                     handleSpike(spike, processes: claudes, test: false)
                 }
             } catch {
@@ -451,14 +451,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = action("Open Usage Page…", #selector(openUsagePage))
 
         menu.addItem(.separator())
-        let guardItem = action("Spike Guard: pause at +\(Int(Config.spikeThreshold)) points in "
-                               + "\(Int(Config.spikeWindow / 60)) min", #selector(toggleSpikeGuard))
-        guardItem.state = spikeGuardEnabled ? .on : .off
-        choices("Threshold: +\(Int(Config.spikeThreshold)) points", Config.spikeThresholdChoices,
-                current: Config.spikeThreshold, #selector(setSpikeThreshold(_:))) { "+\(Int($0)) points" }
-        choices("Window: \(Int(Config.spikeWindow / 60)) min", Config.spikeWindowChoices,
-                current: Config.spikeWindow, #selector(setSpikeWindow(_:))) { "\(Int($0 / 60)) min" }
-        _ = action("Test Spike Alert (pauses nothing)", #selector(testSpikeAlert))
+        if spikeGuardEnabled {
+            let guardItem = action("Spike Guard: pause at +\(Int(Config.spikeThreshold)) points in "
+                                   + "\(Int(Config.spikeWindow / 60)) min", #selector(toggleSpikeGuard))
+            guardItem.state = .on
+            choices("Threshold: +\(Int(Config.spikeThreshold)) points", Config.spikeThresholdChoices,
+                    current: Config.spikeThreshold, #selector(setSpikeThreshold(_:))) { "+\(Int($0)) points" }
+            choices("Window: \(Int(Config.spikeWindow / 60)) min", Config.spikeWindowChoices,
+                    current: Config.spikeWindow, #selector(setSpikeWindow(_:))) { "\(Int($0 / 60)) min" }
+            _ = action("Test Spike Alert (pauses nothing)", #selector(testSpikeAlert))
+        } else {
+            _ = action("Spike Guard: pause sessions when usage jumps", #selector(toggleSpikeGuard))
+        }
 
         menu.addItem(.separator())
         let login = action("Launch at Login", #selector(toggleLaunchAtLogin))
@@ -483,6 +487,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleSpikeGuard() {
         spikeGuardEnabled.toggle()
+        // Skip what was written while the guard was off, so it isn't attributed to the next poll.
+        if spikeGuardEnabled { _ = scanner.scan() }
         render()
     }
 
