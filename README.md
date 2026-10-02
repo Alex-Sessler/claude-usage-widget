@@ -104,7 +104,21 @@ same command again to update. Without `--install` the app is only built to
 The app is ad-hoc signed and has no Dock icon; it lives in the menu bar only. Enable
 **Launch at Login** from its menu if you want it to start automatically.
 
-To uninstall, quit the widget and delete `~/Applications/ClaudeUsage.app`.
+## Uninstall
+
+1. If the menu lists anything under **Paused by spike guard**, resume it first: use
+   **Resume …** in the menu, or type `fg` in the terminal it names.
+2. Untick **Launch at Login** in the menu if it is ticked, so macOS drops the login item.
+3. Choose **Quit**.
+4. Delete the app and its saved menu settings:
+
+```sh
+rm -rf ~/Applications/ClaudeUsage.app
+defaults delete local.claude-usage-widget
+```
+
+That removes everything; the widget keeps no other files. If you quit while a session
+was still paused, resume it with `fg` in its terminal or `kill -CONT <pid>`.
 
 ## Configuration
 
