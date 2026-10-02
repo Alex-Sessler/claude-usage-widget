@@ -53,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.messageText = "Turn on the spike guard?"
         alert.informativeText = "The spike guard watches for sudden jumps in your session usage "
-            + "(+\(Int(Config.spikeThreshold)) points in \(Int(Config.spikeWindow / 60)) min by default). "
+            + "(+\(Int(Config.spikeThreshold))% of the session limit in \(Int(Config.spikeWindow / 60)) min by default). "
             + "When one happens, it shows which local Claude Code sessions caused it and pauses them "
             + "unless you decline. Pausing is reversible.\n\n"
             + "Without it, the widget only shows your usage. You can change this any time in the menu."
@@ -202,7 +202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = (test ? "[TEST — nothing will be paused] " : "")
-            + "Claude session usage jumped +\(Int(spike.delta.rounded())) points in \(minutes) min "
+            + "Claude session usage jumped +\(Int(spike.delta.rounded()))% of the limit in \(minutes) min "
             + "(\(Format.percent(spike.from)) → \(Format.percent(spike.to)))"
 
         if candidates.isEmpty {
@@ -476,11 +476,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
         if spikeGuardEnabled {
-            let guardItem = action("Spike Guard: pause at +\(Int(Config.spikeThreshold)) points in "
+            let guardItem = action("Spike Guard: pause at +\(Int(Config.spikeThreshold))% of session limit in "
                                    + "\(Int(Config.spikeWindow / 60)) min", #selector(toggleSpikeGuard))
             guardItem.state = .on
-            choices("Threshold: +\(Int(Config.spikeThreshold)) points", Config.spikeThresholdChoices,
-                    current: Config.spikeThreshold, #selector(setSpikeThreshold(_:))) { "+\(Int($0)) points" }
+            choices("Threshold: +\(Int(Config.spikeThreshold))% of limit", Config.spikeThresholdChoices,
+                    current: Config.spikeThreshold, #selector(setSpikeThreshold(_:))) { "+\(Int($0))%" }
             choices("Window: \(Int(Config.spikeWindow / 60)) min", Config.spikeWindowChoices,
                     current: Config.spikeWindow, #selector(setSpikeWindow(_:))) { "\(Int($0 / 60)) min" }
             _ = action("Test Spike Alert (pauses nothing)", #selector(testSpikeAlert))

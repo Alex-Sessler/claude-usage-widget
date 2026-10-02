@@ -16,7 +16,7 @@ struct SpikeCandidate {
     let cpuSeconds: [pid_t: Double]
 }
 
-/// Detects the session utilization rising by `Config.spikeThreshold` points within
+/// Detects the session utilization rising by `Config.spikeThreshold` percentage points within
 /// `Config.spikeWindow`, and keeps the recent local activity needed to attribute it.
 ///
 /// Detection deliberately uses only the account-wide API utilization: that is what the
