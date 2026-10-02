@@ -35,8 +35,8 @@ numbers as on [claude.ai/settings/usage](https://claude.ai/settings/usage).
 
 ### Spike guard (optional)
 
-Off by default. Turn it on with **Spike Guard** in the menu; the choice is remembered.
-While it is off the widget only shows usage: it never looks at your processes, shows no
+The widget asks on first launch whether to turn it on. You can change that any time
+with **Spike Guard** in the menu; the choice is remembered. While it is off the widget only shows usage: it never looks at your processes, shows no
 alert and pauses nothing.
 
 A spike is the session utilization rising by X percentage points or more within
