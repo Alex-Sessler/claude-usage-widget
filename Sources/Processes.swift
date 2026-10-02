@@ -206,12 +206,29 @@ enum Pauser {
             ok = tree.map { kill($0.pid, SIGSTOP) == 0 }.first ?? false
         }
         guard ok else { return nil }
+        if claude.entry.hasTerminal { restoreTerminal(claude.entry.tty) }
 
         return PausedProcess(
             pid: claude.pid, cwd: claude.cwd, tty: claude.entry.tty,
             processGroup: groupIsOnlyClaude ? claude.entry.pgid : nil,
             pids: tree.map(\.pid), wasForegroundJob: claude.entry.isForegroundJob, pausedAt: Date()
         )
+    }
+
+    /// SIGSTOP can't be caught, so Claude Code freezes without switching off the terminal
+    /// modes it turned on (SIGTSTP doesn't help: it doesn't clean up on that either).
+    /// The shell then gets a terminal that still reports the mouse, and every mouse
+    /// move lands on its prompt as `^[[<35;99;38M`. Switch those modes off for it;
+    /// Claude Code turns them back on by itself when it continues.
+    private static func restoreTerminal(_ tty: String) {
+        // Mouse reporting, focus events, bracketed paste, kitty keyboard, alternate screen, hidden cursor.
+        let reset = ["?1000l", "?1002l", "?1003l", "?1005l", "?1006l", "?1015l", "?1004l", "?2004l", "<u", "?1049l", "?25h"]
+            .map { "\u{1B}[" + $0 }.joined()
+        usleep(200_000)  // let the stop land, so nothing it was still drawing follows the reset
+        let device = open("/dev/" + tty, O_WRONLY | O_NOCTTY | O_NONBLOCK)
+        guard device >= 0 else { return }
+        defer { close(device) }
+        _ = reset.withCString { write(device, $0, strlen($0)) }
     }
 
     static func resume(_ paused: PausedProcess) {
