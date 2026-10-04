@@ -186,9 +186,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func handleSpike(_ spike: Spike, processes: [ClaudeProcess], test: Bool) {
-        let candidates = spikeGuard.candidates(since: spike.since, processes: processes)
+        let candidates = spikeGuard.candidates(for: spike, processes: processes)
         var seen = Set(paused.map(\.pid))
-        let targets = candidates.flatMap(\.processes).filter {
+        let targets = candidates.filter(\.isOffender).flatMap(\.processes).filter {
             !$0.entry.isStopped && seen.insert($0.pid).inserted
         }
 
@@ -254,12 +254,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 + "from somewhere else (claude.ai, another device, Claude Code on the web). Nothing to pause."
         } else {
             let main = candidates[0]
-            alert.informativeText = "Main offender: \(Self.name(main, contexts[main.activity.sessionId])) — about "
+            let threshold = "+\(Int(Config.spikeThreshold))% of the limit"
+            alert.informativeText = "\(main.isOffender ? "Main offender" : "Biggest session"): "
+                + "\(Self.name(main, contexts[main.activity.sessionId])) — about "
                 + "\(Format.percent(main.share)) of what local sessions used during the jump.\n\n"
                 + (canPause
-                    ? "The sessions marked PAUSE will be paused in \(Config.replyTimeout) s unless you choose otherwise. "
+                    ? "The sessions marked PAUSE went over \(threshold) on their own and will be paused in "
+                        + "\(Config.replyTimeout) s unless you choose otherwise. "
                         + "Pausing is reversible: type fg in that terminal to resume."
-                    : "None of the active sessions has a running process that can be paused.")
+                    : main.isOffender
+                        ? "None of the offending sessions has a running process that can be paused."
+                        : "No session went over \(threshold) on its own, so nothing is paused.")
             alert.accessoryView = candidateList(candidates, targets: targets, contexts: contexts, details: details)
         }
 
@@ -353,12 +358,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     .paragraphStyle: index == 0 ? NSParagraphStyle.default : paragraph,
                 ]))
             }
-            if index == 0 {
+            if index == 0, candidate.isOffender {
                 badge(" MAIN OFFENDER ", .systemOrange)
                 add(" ", regular)
             }
-            badge(willPause ? " PAUSE " : " NOT PAUSABLE ", willPause ? .systemRed : .systemGray)
-            add("  \(Format.percent(candidate.share)) · " + Format.path(a.cwd),
+            badge(willPause ? " PAUSE " : candidate.isOffender ? " NOT PAUSABLE " : " KEEPS RUNNING ",
+                  willPause ? .systemRed : .systemGray)
+            add("  \(Format.percent(candidate.share)) (+\(Format.percent(candidate.rise))) · " + Format.path(a.cwd),
                 [.font: NSFont.boldSystemFont(ofSize: size + 1), .foregroundColor: NSColor.labelColor])
             if let branch = context.gitBranch { add("  (\(branch))", secondary) }
             add("\n", regular)
