@@ -13,6 +13,9 @@ struct SessionActivity {
     var cacheReadTokens = 0
     var cacheWriteTokens = 0
     var models: Set<String> = []
+    /// Estimate of how much these calls count towards the limit, for ranking sessions
+    /// against each other: tokens weighted by what they cost relative to each other.
+    var weight = 0.0
 
     var totalTokens: Int { inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens }
 
@@ -26,6 +29,19 @@ struct SessionActivity {
         cacheReadTokens += other.cacheReadTokens
         cacheWriteTokens += other.cacheWriteTokens
         models.formUnion(other.models)
+        weight += other.weight
+    }
+
+    /// API list-price ratios: output 5× input, cache reads 0.1×, cache writes 1.25× (5 min)
+    /// or 2× (1 h); Opus : Sonnet : Haiku as 5 : 3 : 1. Models that fit none count as Opus.
+    static func weight(of usage: [String: Any], model: String?) -> Double {
+        func tokens(_ key: String) -> Double { Double(usage[key] as? Int ?? 0) }
+        let cacheWrite = tokens("cache_creation_input_tokens")
+        let oneHour = min(cacheWrite, Double((usage["cache_creation"] as? [String: Any])?["ephemeral_1h_input_tokens"] as? Int ?? 0))
+        let base = tokens("input_tokens") + 5 * tokens("output_tokens") + 0.1 * tokens("cache_read_input_tokens")
+            + 1.25 * (cacheWrite - oneHour) + 2 * oneHour
+        let model = model ?? ""
+        return base * (model.contains("haiku") ? 1 : model.contains("sonnet") ? 3 : 5)
     }
 }
 
@@ -115,6 +131,7 @@ final class TranscriptScanner {
             activity.cacheReadTokens += usage["cache_read_input_tokens"] as? Int ?? 0
             activity.cacheWriteTokens += usage["cache_creation_input_tokens"] as? Int ?? 0
             if let model = message["model"] as? String, model != "<synthetic>" { activity.models.insert(model) }
+            activity.weight += SessionActivity.weight(of: usage, model: message["model"] as? String)
             bySession[sessionId] = activity
         }
     }
@@ -160,6 +177,54 @@ final class WindowTally {
         start = nil
         scanner = nil
         sessions = [:]
+    }
+}
+
+/// Finds sessions that were ended with `/clear`. Claude Code leaves no mark in the cleared
+/// transcript; the conversation continues in a new one that starts with the `/clear`
+/// command, written at the moment the old one was last touched.
+final class ClearedSessions {
+    /// When the transcript was started by `/clear` (nil if it wasn't), by path. Never changes.
+    private var clearTimes: [String: Date?] = [:]
+    private let formatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    func isCleared(_ transcript: URL?) -> Bool {
+        guard let transcript, let modified = Self.modified(transcript) else { return false }
+        let siblings = (try? FileManager.default.contentsOfDirectory(
+            at: transcript.deletingLastPathComponent(), includingPropertiesForKeys: [.contentModificationDateKey]
+        )) ?? []
+        return siblings.contains { sibling in
+            guard sibling.pathExtension == "jsonl", sibling != transcript,
+                  // The successor was written at or after the clear.
+                  (Self.modified(sibling) ?? .distantPast) >= modified.addingTimeInterval(-5),
+                  let cleared = clearTime(of: sibling) else { return false }
+            return abs(cleared.timeIntervalSince(modified)) < 5
+        }
+    }
+
+    private func clearTime(of transcript: URL) -> Date? {
+        if let known = clearTimes[transcript.path] { return known }
+        var result: Date?
+        if let handle = try? FileHandle(forReadingFrom: transcript) {
+            defer { try? handle.close() }
+            let head = (try? handle.read(upToCount: 64 << 10)) ?? Data()
+            for line in head.split(separator: UInt8(ascii: "\n")).prefix(10)
+            where line.range(of: Data("<command-name>/clear</command-name>".utf8)) != nil {
+                let record = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any]
+                result = (record?["timestamp"] as? String).flatMap(formatter.date)
+                break
+            }
+        }
+        clearTimes[transcript.path] = .some(result)
+        return result
+    }
+
+    private static func modified(_ url: URL) -> Date? {
+        (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
     }
 }
 
