@@ -31,6 +31,7 @@ numbers as on [claude.ai/settings/usage](https://claude.ai/settings/usage).
 - **Top sessions this window**: the five local Claude Code sessions that used the most
   tokens since the current 5-hour window started, with folder, git branch, session title
   and share of local tokens. Subagent usage counts towards the session that spawned it.
+  A session that was ended with `/clear` is marked `cleared`.
 - **Refresh Now** (`⌘R`), **Open Usage Page…**, **Launch at Login**, **Quit** (`⌘Q`).
 
 ### Spike guard (optional)
@@ -65,8 +66,16 @@ Things worth knowing:
 
 - If the usage came from somewhere else (claude.ai, another device, Claude Code on the
   web), the alert says so and nothing is paused.
-- Several `claude` processes in the same folder can't be told apart, so all of them are
-  paused.
+- The alert names the **main offender** and gives every session its share of what local
+  sessions used during the jump. The share is an estimate: tokens weighted by their
+  relative API price (output over input, cache reads cheap, Opus over Sonnet over Haiku).
+  The menu keeps a **Last spike** line with the time, size and main offender.
+- Processes are matched to sessions through Claude Code's own registry
+  (`~/.claude/sessions/<pid>.json`). A process without an entry is matched by folder;
+  several of those in the same folder can't be told apart, so all of them are paused.
+- If you continue a paused session with `claude --resume`, or start a new `claude` in
+  that terminal, instead of `fg`, the entry leaves the paused list, but the stopped
+  process stays behind until you end it (`jobs` and `kill %N` in that terminal).
 - The Claude desktop app is never paused; only the `claude` CLI is matched.
 - The list of paused processes lives in memory. If you quit the widget while something
   is paused, resume it with `fg` or `kill -CONT <pid>`.
@@ -147,8 +156,8 @@ The alert timeout (15 seconds) is a constant in
   poll via `/usr/bin/security`, used for that one request and never stored or logged.
 - **Local activity** comes from tailing Claude Code's transcripts in
   `~/.claude/projects/**/*.jsonl` and summing the token usage of each API response.
-- **Processes** are found with `ps` and their working directories with `lsof`, only
-  while the spike guard is on.
+- **Processes** are found with `ps`, their working directories with `lsof` and their
+  sessions in `~/.claude/sessions/<pid>.json`, only while the spike guard is on.
 
 Spike detection uses only the account-wide utilization from the API, because that is
 what the limit is counted on. Local token counts are used only to find out who was

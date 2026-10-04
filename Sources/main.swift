@@ -4,7 +4,7 @@ import ServiceManagement
 // MARK: - Menu bar app
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private var timer: Timer?
     private var latest: UsageResponse?
@@ -21,6 +21,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let windowTally = WindowTally()
     /// Titles of the top sessions, re-read from their transcripts every few minutes.
     private var topContexts: [String: (context: SessionContext, loadedAt: Date)] = [:]
+    private let clearedSessions = ClearedSessions()
+    /// Top sessions that were ended with `/clear`.
+    private var topCleared: Set<String> = []
+    /// What the last real spike was and who caused it, kept for the menu.
+    private var lastSpike: String?
+    private let menu = NSMenu()
 
     private var spikeGuardEnabled: Bool {
         get { UserDefaults.standard.object(forKey: "spikeGuardEnabled") as? Bool ?? false }
@@ -29,6 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem.button?.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        menu.delegate = self
+        statusItem.menu = menu
         render()
 
         timer = Timer.scheduledTimer(withTimeInterval: Config.pollInterval, repeats: true) { [weak self] _ in
@@ -128,6 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let resetsAt = Self.windowKey(latest?.fiveHour?.resetsAt), resetsAt > Date() else {
             windowTally.reset()
             topContexts = [:]
+            topCleared = []
             return
         }
         windowTally.update(windowStart: resetsAt.addingTimeInterval(-5 * 60 * 60))
@@ -136,6 +145,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for session in top where Date().timeIntervalSince(topContexts[session.sessionId]?.loadedAt ?? .distantPast) > 5 * 60 {
             topContexts[session.sessionId] = (SessionContext.load(session.transcript), Date())
         }
+        topCleared = Set(top.filter { clearedSessions.isCleared($0.transcript) }.map(\.sessionId))
     }
 
     private var topSessions: [SessionActivity] {
@@ -143,11 +153,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sorted { $0.totalTokens > $1.totalTokens }.prefix(5))
     }
 
-    /// Drops processes that were resumed (e.g. `fg` in their terminal) or have exited.
+    /// Drops processes that were resumed (e.g. `fg` in their terminal) or have exited,
+    /// and those that were replaced: the session was continued in a new process
+    /// (`claude --resume`), or a new `claude` was started in the same terminal. The
+    /// stopped process stays behind then, but nothing is waiting to be resumed.
     private func updatePaused(_ table: [ProcessEntry]) {
+        guard !paused.isEmpty else { return }
+        let sessions = Processes.sessionIds()
+        let running = table.filter { Processes.isClaude($0) && !$0.isStopped }
+        let runningSessions = Set(running.compactMap { sessions[$0.pid] })
         paused.removeAll { process in
             table.first { $0.pid == process.pid }?.isStopped != true
+                || process.sessionId.map(runningSessions.contains) == true
+                || running.contains { $0.hasTerminal && $0.tty == process.tty && !process.pids.contains($0.pid) }
         }
+    }
+
+    /// The menu is only rebuilt on a poll; catch up on what was resumed since.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let before = paused.count
+        updatePaused(Processes.table())
+        if paused.count != before { render() }
     }
 
     // MARK: Spike handling
@@ -188,8 +214,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        if !test {
+            let time = DateFormatter()
+            time.dateFormat = "HH:mm"
+            var summary = "Last spike \(time.string(from: Date())): +\(Int(spike.delta.rounded()))% — "
+            if let main = candidates.first {
+                summary += "mostly \(Self.name(main, contexts[main.activity.sessionId])) (\(Format.percent(main.share)) of local usage)"
+            } else {
+                summary += "not from a local session"
+            }
+            lastSpike = summary
+        }
+
         spikeGuard.resetBaseline()
         render()
+    }
+
+    /// Folder and title: how a session is named in one line.
+    private static func name(_ candidate: SpikeCandidate, _ context: SessionContext?) -> String {
+        let folder = candidate.activity.cwd.map { ($0 as NSString).lastPathComponent } ?? "?"
+        return folder + (context?.title.map { " “\(Format.truncate($0, 40))”" } ?? "")
     }
 
     /// Shows the spike alert. When there's something to pause, it pauses after
@@ -209,10 +253,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.informativeText = "No local Claude Code session made API calls in that time, so the usage came "
                 + "from somewhere else (claude.ai, another device, Claude Code on the web). Nothing to pause."
         } else {
-            alert.informativeText = canPause
-                ? "The sessions marked PAUSE will be paused in \(Config.replyTimeout) s unless you choose otherwise. "
-                    + "Pausing is reversible: type fg in that terminal to resume."
-                : "None of the active sessions has a running process that can be paused."
+            let main = candidates[0]
+            alert.informativeText = "Main offender: \(Self.name(main, contexts[main.activity.sessionId])) — about "
+                + "\(Format.percent(main.share)) of what local sessions used during the jump.\n\n"
+                + (canPause
+                    ? "The sessions marked PAUSE will be paused in \(Config.replyTimeout) s unless you choose otherwise. "
+                        + "Pausing is reversible: type fg in that terminal to resume."
+                    : "None of the active sessions has a running process that can be paused.")
             alert.accessoryView = candidateList(candidates, targets: targets, contexts: contexts, details: details)
         }
 
@@ -298,14 +345,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let context = contexts[a.sessionId] ?? SessionContext()
             let willPause = candidate.processes.contains { targetPids.contains($0.pid) }
 
-            let badge = willPause ? " PAUSE " : " NOT PAUSABLE "
-            text.append(NSAttributedString(string: badge, attributes: [
-                .font: NSFont.boldSystemFont(ofSize: size - 2),
-                .foregroundColor: NSColor.white,
-                .backgroundColor: willPause ? NSColor.systemRed : NSColor.systemGray,
-                .paragraphStyle: index == 0 ? NSParagraphStyle.default : paragraph,
-            ]))
-            add("  " + Format.path(a.cwd), [.font: NSFont.boldSystemFont(ofSize: size + 1), .foregroundColor: NSColor.labelColor])
+            func badge(_ title: String, _ color: NSColor) {
+                text.append(NSAttributedString(string: title, attributes: [
+                    .font: NSFont.boldSystemFont(ofSize: size - 2),
+                    .foregroundColor: NSColor.white,
+                    .backgroundColor: color,
+                    .paragraphStyle: index == 0 ? NSParagraphStyle.default : paragraph,
+                ]))
+            }
+            if index == 0 {
+                badge(" MAIN OFFENDER ", .systemOrange)
+                add(" ", regular)
+            }
+            badge(willPause ? " PAUSE " : " NOT PAUSABLE ", willPause ? .systemRed : .systemGray)
+            add("  \(Format.percent(candidate.share)) · " + Format.path(a.cwd),
+                [.font: NSFont.boldSystemFont(ofSize: size + 1), .foregroundColor: NSColor.labelColor])
             if let branch = context.gitBranch { add("  (\(branch))", secondary) }
             add("\n", regular)
 
@@ -316,7 +370,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             if candidate.processes.isEmpty {
-                add("No running claude process in this folder (ended, or not a CLI session)\n", secondary)
+                add("No running claude process for this session (ended, or not a CLI session)\n", secondary)
             }
             for process in candidate.processes {
                 let info = details[process.pid]
@@ -327,7 +381,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 add(parts.joined(separator: " · ") + "  ", secondary)
                 add(Format.truncate(info?.arguments ?? "claude", 70) + "\n", mono)
             }
-            if candidate.processes.count > 1 {
+            if candidate.matchedByFolder, candidate.processes.count > 1 {
                 add("\(candidate.processes.count) claude processes run in this folder and can't be told apart — all are paused\n",
                     [.font: NSFont.systemFont(ofSize: size), .foregroundColor: NSColor.systemOrange])
             }
@@ -376,11 +430,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.attributedTitle = title
         statusItem.button?.toolTip = "Claude usage — session (5h) / weekly (7d)"
 
-        statusItem.menu = buildMenu()
+        buildMenu()
     }
 
-    private func buildMenu() -> NSMenu {
-        let menu = NSMenu()
+    private func buildMenu() {
+        menu.removeAllItems()
 
         func info(_ title: String) {
             let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
@@ -442,6 +496,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if let branch = context?.gitBranch { line += " (\(branch))" }
                 if let title = context?.title { line += " — “\(Format.truncate(title, 40))”" }
                 line += " · \(Format.tokens(session.totalTokens)) tokens"
+                if topCleared.contains(session.sessionId) { line += " · cleared" }
                 info(line)
             }
         }
@@ -449,6 +504,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let lastError {
             menu.addItem(.separator())
             info("⚠︎ \(lastError.localizedDescription)")
+        }
+
+        if spikeGuardEnabled, let lastSpike {
+            menu.addItem(.separator())
+            info(lastSpike)
         }
 
         if !paused.isEmpty {
@@ -492,7 +552,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let login = action("Launch at Login", #selector(toggleLaunchAtLogin))
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
-        return menu
     }
 
     @objc private func refreshNow() { refresh() }

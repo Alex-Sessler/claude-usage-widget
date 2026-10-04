@@ -20,6 +20,8 @@ struct ProcessEntry {
 struct ClaudeProcess {
     let entry: ProcessEntry
     let cwd: String?
+    /// The session it is running, from Claude Code's own registry (nil if it has no entry).
+    let sessionId: String?
     var pid: pid_t { entry.pid }
 }
 
@@ -47,10 +49,10 @@ enum Processes {
     /// from it and is left out (it's paused as part of that one's tree). One in a
     /// different folder — e.g. `claude -p` run from inside a session — is its own entry.
     static func claudeProcesses(in table: [ProcessEntry]) -> [ClaudeProcess] {
-        let isClaude = { (entry: ProcessEntry) in (entry.command as NSString).lastPathComponent == "claude" }
         let entries = table.filter(isClaude)
         guard !entries.isEmpty else { return [] }
         let cwds = workingDirectories(of: entries.map(\.pid))
+        let sessions = sessionIds()
         let byPid = Dictionary(table.map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
         func claudeAncestor(of entry: ProcessEntry) -> ProcessEntry? {
             var current = byPid[entry.ppid]
@@ -67,7 +69,27 @@ enum Processes {
                 guard let ancestor = claudeAncestor(of: entry) else { return true }
                 return cwds[entry.pid] == nil || cwds[entry.pid] != cwds[ancestor.pid]
             }
-            .map { ClaudeProcess(entry: $0, cwd: cwds[$0.pid]) }
+            .map { ClaudeProcess(entry: $0, cwd: cwds[$0.pid], sessionId: sessions[$0.pid]) }
+    }
+
+    static func isClaude(_ entry: ProcessEntry) -> Bool {
+        (entry.command as NSString).lastPathComponent == "claude"
+    }
+
+    /// Which session each Claude Code process is running (pid → session id), from the
+    /// `sessions/<pid>.json` files Claude Code keeps. It follows `/clear` and `--resume`.
+    static func sessionIds() -> [pid_t: String] {
+        let directory = Config.claudeDir.appendingPathComponent("sessions")
+        let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+        var result: [pid_t: String] = [:]
+        for file in files where file.pathExtension == "json" {
+            guard let pid = pid_t(file.deletingPathExtension().lastPathComponent),
+                  let data = try? Data(contentsOf: file),
+                  let record = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let session = record["sessionId"] as? String else { continue }
+            result[pid] = session
+        }
+        return result
     }
 
     /// Human-readable context for a process: how it was started, how long it's been
@@ -176,6 +198,7 @@ enum Processes {
 struct PausedProcess {
     let pid: pid_t
     let cwd: String?
+    let sessionId: String?
     let tty: String
     /// Whole job (process group) signalled, or just these pids.
     let processGroup: pid_t?
@@ -209,7 +232,7 @@ enum Pauser {
         if claude.entry.hasTerminal { restoreTerminal(claude.entry.tty) }
 
         return PausedProcess(
-            pid: claude.pid, cwd: claude.cwd, tty: claude.entry.tty,
+            pid: claude.pid, cwd: claude.cwd, sessionId: claude.sessionId, tty: claude.entry.tty,
             processGroup: groupIsOnlyClaude ? claude.entry.pgid : nil,
             pids: tree.map(\.pid), wasForegroundJob: claude.entry.isForegroundJob, pausedAt: Date()
         )
