@@ -13,6 +13,12 @@ struct SpikeCandidate {
     let activity: SessionActivity
     /// Its part of what all local sessions used during the spike (0–100, estimated).
     let share: Double
+    /// Its part of the rise, in percent of the session limit (estimated: `share` of the
+    /// spike, as if all of it came from local sessions).
+    let rise: Double
+    /// Went over the spike threshold on its own. Only these are paused; the others are
+    /// only listed.
+    var isOffender: Bool { rise >= Config.spikeThreshold - 0.05 }
     let processes: [ClaudeProcess]
     /// The processes were matched by working directory only, because Claude Code's
     /// registry doesn't say which session they run.
@@ -75,9 +81,9 @@ final class SpikeGuard {
         samples = Array(samples.suffix(1))
     }
 
-    func candidates(since: Date, processes: [ClaudeProcess]) -> [SpikeCandidate] {
+    func candidates(for spike: Spike, processes: [ClaudeProcess]) -> [SpikeCandidate] {
         // The interval ending at `since` already belongs to the rise.
-        let relevant = intervals.filter { $0.time >= since.addingTimeInterval(-Config.pollInterval - 5) }
+        let relevant = intervals.filter { $0.time >= spike.since.addingTimeInterval(-Config.pollInterval - 5) }
         var bySession: [String: SessionActivity] = [:]
         var cpu: [pid_t: Double] = [:]
         for interval in relevant {
@@ -89,6 +95,7 @@ final class SpikeGuard {
         return active
             .sorted { $0.weight > $1.weight }
             .map { activity in
+                let share = activity.weight / total * 100
                 var matching = processes.filter { $0.sessionId == activity.sessionId }
                 let matchedByFolder = matching.isEmpty
                 if matchedByFolder {
@@ -97,7 +104,8 @@ final class SpikeGuard {
                 }
                 // A stopped process left behind after the session was continued in a new one.
                 if matching.contains(where: { !$0.entry.isStopped }) { matching.removeAll { $0.entry.isStopped } }
-                return SpikeCandidate(activity: activity, share: activity.weight / total * 100, processes: matching,
+                return SpikeCandidate(activity: activity, share: share,
+                                      rise: share / 100 * spike.delta, processes: matching,
                                       matchedByFolder: matchedByFolder,
                                       cpuSeconds: cpu.filter { pid in matching.contains { $0.pid == pid.key } })
             }

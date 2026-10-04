@@ -49,7 +49,10 @@ the choice is remembered. When a spike happens the widget:
    them to running `claude` processes by working directory.
 2. Shows an alert listing each session: folder, branch, title, last prompt, process id,
    host app (Terminal, iTerm2, VS Code, tmux, …), API calls, models and token counts.
-3. Pauses the sessions marked `PAUSE` after 15 seconds unless you click **Don't pause**.
+3. Pauses the offenders, marked `PAUSE`, after 15 seconds unless you click **Don't pause**.
+   An offender is a session that went over the threshold on its own: its share of the jump
+   is at least the chosen percentage of the limit. The rest are marked `KEEPS RUNNING`; if
+   several small sessions add up to the jump, the alert still shows but nothing is paused.
    **Pause now** does it immediately. Both buttons need a click; Return and Escape are
    ignored so a stray keystroke can't decide for you.
 
@@ -69,6 +72,7 @@ Things worth knowing:
 - The alert names the **main offender** and gives every session its share of what local
   sessions used during the jump. The share is an estimate: tokens weighted by their
   relative API price (output over input, cache reads cheap, Opus over Sonnet over Haiku).
+  A session's own rise is that share of the jump, as if all of it came from local sessions.
   The menu keeps a **Last spike** line with the time, size and main offender.
 - Processes are matched to sessions through Claude Code's own registry
   (`~/.claude/sessions/<pid>.json`). A process without an entry is matched by folder;
